@@ -1,55 +1,66 @@
 pipeline {
     agent any
-
     environment {
-        GIT_CRED_ID = 'github-project'  // Ensure this credential exists in Jenkins
+        DOCKER_IMAGE = "absurdguy/docker-app:latest"  // Change this to your registry
+        CONTAINER_NAME = "docker-running-app"
+        REGISTRY_CREDENTIALS = "docker-project"  // Jenkins credentials ID
     }
 
     stages {
-        stage('Clone Repository') {
+        stage('Checkout Code') {
             steps {
-                script {
-                    withCredentials([usernamePassword(credentialsId: GIT_CRED_ID, usernameVariable: 'GIT_USER', passwordVariable: 'GIT_TOKEN')]) {
-                        git branch: 'main', url: "https://${GIT_USER}:${GIT_TOKEN}@github.com/PadmavathyNarayanan/jenkins-pipeline-demo.git"
-                    }
+                withCredentials([usernamePassword(credentialsId: 'github-project', usernameVariable: 'GIT_USER', passwordVariable: 'GIT_TOKEN')]) {
+                    git url: "https://$GIT_USER:$GIT_TOKEN@github.com/SysSyncer/new-pipeline-project.git", branch: 'main'
                 }
             }
         }
 
-        stage('Build & Test All Branches') {
+        stage('Build Docker Image') {
             steps {
-                script {
-                    def branches = ['develop', 'main']
+                sh 'docker build -t $DOCKER_IMAGE .'
+            }
+        }
 
-                    for (branch in branches) {
-                        echo "Processing Branch: ${branch}"
-
-                        withCredentials([usernamePassword(credentialsId: GIT_CRED_ID, usernameVariable: 'GIT_USER', passwordVariable: 'GIT_TOKEN')]) {
-                            checkout([$class: 'GitSCM', 
-                                branches: [[name: "*/${branch}"]], 
-                                userRemoteConfigs: [[url: "https://${GIT_USER}:${GIT_TOKEN}@github.com/PadmavathyNarayanan/jenkins-pipeline-demo.git"]]
-                            ])
-                        }
-
-                        try {
-                            sh 'mvn clean test'
-                            echo "Build & Test Successful for ${branch}"
-                        } catch (Exception e) {
-                            echo "Build & Test Failed for ${branch}"
-                        }
-                    }
+        stage('Login to Docker Registry') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'docker-project', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    sh 'echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin'
                 }
             }
         }
 
-        stage('Deploy if Main Branch') {
-            when {
-                expression { env.GIT_BRANCH == 'main' } // Check correct branch name
-            }
+        stage('Push to Container Registry') {
             steps {
-                echo "Deploying Application from Main Branch"
-                sh 'scp target/app.jar user@server:/deployments/' // Ensure SSH setup
+                sh 'docker push $DOCKER_IMAGE'
             }
+        }
+
+        stage('Stop & Remove Existing Container') {
+            steps {
+                script {
+                    sh '''
+                    if [ "$(docker ps -aq -f name=$CONTAINER_NAME)" ]; then
+                        docker stop $CONTAINER_NAME || true
+                        docker rm $CONTAINER_NAME || true
+                    fi
+                    '''
+                }
+            }
+        }
+
+        stage('Run Docker Container') {
+            steps {
+                sh 'docker run -d -p 5001:5000 --name $CONTAINER_NAME $DOCKER_IMAGE'
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Build, push, and container execution successful!"
+        }
+        failure {
+            echo "Build or container execution failed."
         }
     }
 }
